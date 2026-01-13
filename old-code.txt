@@ -1,0 +1,467 @@
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import QrScanner from "qr-scanner";
+import axios from "axios";
+
+export default function AttendanceScanner() {
+  const [scanResult, setScanResult] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [results, setResults] = useState(null);
+  const [error, setError] = useState(null);
+  const [scannerActive, setScannerActive] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [zoomSupported, setZoomSupported] = useState(false);
+  const [maxZoom, setMaxZoom] = useState(5);
+  const videoRef = useRef(null);
+  const qrScannerRef = useRef(null);
+  const streamRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  // Predefined list of students with cookie
+  const students = [
+    {
+      name: "Kartikay Singh",
+      stu_id: "66ae58d79f7e1545aa4ab9f7",
+      cookie:
+        "connect.sid=s%3ArvRENdOVc-_pWBzlix1nPBSblvBUPpfC.9TCvA1o7Kj9Je7Tv4nDUGjEE6YxgLLRrw7INlJ9vGSY",
+    },
+    {
+      name: "Dhruv Gupta",
+      stu_id: "66af305ea0aaecc3ad322639",
+      cookie:
+        "connect.sid=s%3AFIWys4td1PqkE9j7TiGkJnNiUl87_Q_T.zp25RO%2BuuFUyVTHqgsSD7ePl5RBtVD%2Fv69PTyuooYAc",
+    },
+    // {
+    //   name: "Devansh Gupta",
+    //   stu_id: "66af31860b7cc4aa4bed9e29",
+    //   cookie:
+    //     "connect.sid=s%3AziqQ_JVGUVgg1dWgb2LsJkucfa0Lz7Rv.8ZOiJ9Ppxzi%2B0dQhOLQQ40qyvttF8%2BSmjjxmCyAiRoA",
+    // },
+    {
+      name: "Goutam Mittal",
+      stu_id: "66aefa709f7e1545aa4b2e0d",
+      cookie:
+        "connect.sid=s%3AwL8MFVjE0eU4_AbXusJiVQLPzcv2xO0a.UfaxsUO5D1ITR6OxZVc82O1KkGVKANih%2FYDdNDc0zmk",
+    },
+    {
+      name: "Gyanendra prakash",
+      stu_id: "66aef7aac76a12dc47acdfc8",
+      cookie:
+        "connect.sid=s%3ApF6_PypIxlYbOua3aF1QaaYx-N4UjHP0.0u9%2F9deVLqz4%2FnTXZq7wmS6aE3XepeCp2thX5%2Bfvo8A",
+    },
+  ];
+
+  // Function to submit attendance data
+  const submitAttendance = async (attendanceId) => {
+    if (!attendanceId) return;
+
+    setIsSubmitting(true);
+    setError(null);
+
+    const initialResults = students.map((student) => ({
+      name: student.name,
+      stu_id: student.stu_id,
+      status: "loading",
+      error: null,
+    }));
+
+    setResults({ results: initialResults });
+
+    try {
+      const studentPromises = students.map(async (student, index) => {
+        try {
+          const response = await axios.post(
+            "https://flask-hello-world-teal-kappa.vercel.app/submit-attendance",
+            {
+              attendance_id: attendanceId,
+              students: [student],
+            },
+            {
+              headers: {
+                "Content-Type": "application/json",
+                Accept: "application/json",
+              },
+              timeout: 10000,
+            }
+          );
+
+          const studentResult = response.data.results[0];
+          setResults((prevResults) => {
+            const updatedResults = [...prevResults.results];
+            updatedResults[index] = studentResult;
+            return { results: updatedResults };
+          });
+
+          return studentResult;
+        } catch (err) {
+          console.error(`Error submitting for ${student.name}:`, err);
+          const errorResult = {
+            name: student.name,
+            stu_id: student.stu_id,
+            status: "error",
+            error: err.message || "Failed to submit attendance",
+          };
+
+          setResults((prevResults) => {
+            const updatedResults = [...prevResults.results];
+            updatedResults[index] = errorResult;
+            return { results: updatedResults };
+          });
+
+          return errorResult;
+        }
+      });
+
+      await Promise.all(studentPromises);
+      console.log("All attendance submissions completed");
+    } catch (err) {
+      console.error("Error in attendance submission process:", err);
+      setError(`Error: ${err.message}`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Function to apply zoom
+  const applyZoom = async () => {
+    try {
+      if (streamRef.current) {
+        const videoTrack = streamRef.current.getVideoTracks()[0];
+        if (videoTrack) {
+          const capabilities = videoTrack.getCapabilities();
+          if (capabilities.zoom) {
+            setZoomSupported(true);
+            setMaxZoom(capabilities.zoom.max || 5);
+            await videoTrack.applyConstraints({
+              advanced: [{ zoom: zoomLevel }],
+            });
+          } else {
+            setZoomSupported(false);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Error applying zoom:", err);
+    }
+  };
+
+  // Initialize scanner
+  const initializeScanner = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "environment",
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+        },
+      });
+
+      streamRef.current = stream;
+      videoRef.current.srcObject = stream;
+
+      // Check zoom capabilities
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        const capabilities = videoTrack.getCapabilities();
+        setZoomSupported(!!capabilities.zoom);
+        setMaxZoom(capabilities.zoom?.max || 5);
+      }
+
+      // Initialize qr-scanner
+      const scanner = new QrScanner(
+        videoRef.current,
+        (result) => {
+          scanner.stop();
+          stream.getTracks().forEach((track) => track.stop());
+          setScanResult(result.data);
+          setScannerActive(false);
+          submitAttendance(result.data);
+        },
+        {
+          highlightScanRegion: true,
+          highlightCodeOutline: true,
+          maxScansPerSecond: 10,
+        }
+      );
+
+      qrScannerRef.current = scanner;
+      await scanner.start();
+    } catch (err) {
+      console.error("Error initializing scanner:", err);
+      setError("Could not access camera. Please check permissions.");
+      setScannerActive(false);
+    }
+  };
+
+  // Function to handle QR code scanning from uploaded image
+  const handleImageUpload = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    try {
+      const result = await QrScanner.scanImage(file, {
+        returnDetailedScanResult: true,
+      });
+      setScanResult(result.data);
+      submitAttendance(result.data);
+    } catch (err) {
+      console.error("Error scanning QR code from image:", err);
+      setError("Could not scan QR code from the uploaded image.");
+    } finally {
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
+
+  // Effect to apply zoom
+  useEffect(() => {
+    if (scannerActive && zoomSupported) {
+      applyZoom();
+    }
+  }, [zoomLevel, scannerActive, zoomSupported]);
+
+  // Effect to manage scanner lifecycle
+  useEffect(() => {
+    if (scannerActive) {
+      initializeScanner();
+    }
+
+    return () => {
+      if (qrScannerRef.current) {
+        qrScannerRef.current.stop();
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, [scannerActive]);
+
+  const startScanner = () => {
+    setScannerActive(true);
+  };
+
+  const resetScanner = () => {
+    setScanResult(null);
+    setResults(null);
+    setError(null);
+    setScannerActive(false);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#F5F0E1] flex flex-col">
+      <header className="bg-gradient-to-r from-[#006D77] to-[#001E26] text-white py-4 px-6 shadow-md">
+        <h1 className="text-2xl font-bold text-center">
+          Attendance QR Scanner
+        </h1>
+      </header>
+
+      <main className="flex-1 container mx-auto p-4 max-w-md">
+        <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+          {!scannerActive &&
+            !scanResult &&
+            !isSubmitting &&
+            !results &&
+            !error && (
+              <div className="text-center">
+                <h2 className="text-xl font-semibold mb-4 text-[#006D77]">
+                  QR Code Scanner
+                </h2>
+                <p className="text-gray-600 mb-6">
+                  Scan or upload an attendance QR code
+                </p>
+                <button
+                  onClick={startScanner}
+                  className="bg-[#7AE2CF] hover:bg-[#5ECFBC] text-[#001E26] font-medium py-3 px-6 rounded-lg w-full transition-colors mb-4"
+                >
+                  Start Camera Scanning
+                </button>
+                <div className="relative">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    ref={fileInputRef}
+                    onChange={handleImageUpload}
+                    className="hidden"
+                    id="qr-upload"
+                  />
+                  <label
+                    htmlFor="qr-upload"
+                    className="bg-[#006D77] hover:bg-[#005A64] text-white py-3 px-6 rounded-lg w-full transition-colors inline-block cursor-pointer"
+                  >
+                    Upload QR Code Image
+                  </label>
+                </div>
+              </div>
+            )}
+
+          {scannerActive && !scanResult && !isSubmitting && !results && (
+            <div className="text-center">
+              <h2 className="text-xl font-semibold mb-2 text-[#006D77]">
+                Scan QR Code
+              </h2>
+              <p className="text-gray-600 mb-4">Align QR code in the frame</p>
+              <div className="relative mx-auto w-full max-w-[300px] h-[300px] rounded-lg overflow-hidden border border-[#7AE2CF]">
+                <video
+                  ref={videoRef}
+                  className="w-full h-full object-cover"
+                  playsInline
+                />
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="w-48 h-48 border-2 border-[#7AE2CF] border-dashed rounded-lg opacity-75" />
+                </div>
+              </div>
+              {zoomSupported && (
+                <div className="mt-4">
+                  <label className="block text-sm font-medium text-[#006D77]">
+                    Zoom: {zoomLevel.toFixed(1)}x
+                  </label>
+                  <input
+                    type="range"
+                    min="1"
+                    max={maxZoom}
+                    step="0.1"
+                    value={zoomLevel}
+                    onChange={(e) =>
+                      setZoomLevel(Number.parseFloat(e.target.value))
+                    }
+                    className="w-full h-2 bg-[#F5F0E1] rounded-lg cursor-pointer"
+                  />
+                </div>
+              )}
+              <button
+                onClick={resetScanner}
+                className="mt-4 bg-[#001E26] hover:bg-[#003540] text-white py-3 px-6 rounded-lg w-full transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {isSubmitting && (
+            <div className="text-center py-8">
+              <h2 className="text-xl font-semibold mb-6 text-[#006D77]">
+                Submitting Attendance...
+              </h2>
+              <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-[#7AE2CF] mx-auto mb-6"></div>
+              <p className="text-gray-600">Processing attendance...</p>
+            </div>
+          )}
+
+          {scanResult && !isSubmitting && !results && (
+            <div className="text-center">
+              <h2 className="text-xl font-semibold mb-4 text-[#006D77]">
+                QR Code Detected
+              </h2>
+              <div className="flex justify-center mb-4">
+                <div className="bg-[#7AE2CF]/20 text-[#006D77] rounded-full p-3">
+                  <svg
+                    className="h-10 w-10"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M5 13l4 4L19 7"
+                    />
+                  </svg>
+                </div>
+              </div>
+              <p className="mb-6">
+                <span className="font-semibold">Attendance ID:</span>{" "}
+                {scanResult}
+              </p>
+              <button
+                onClick={resetScanner}
+                className="bg-[#7AE2CF] hover:bg-[#5ECFBC] text-[#001E26] font-medium py-3 px-6 rounded-lg w-full transition-colors"
+              >
+                Scan Again
+              </button>
+            </div>
+          )}
+
+          {error && (
+            <div className="text-center">
+              <h2 className="text-xl font-semibold mb-4 text-[#006D77]">
+                Error Occurred
+              </h2>
+              <div className="flex justify-center mb-4">
+                <div className="bg-red-100 text-red-600 rounded-full p-3">
+                  <svg
+                    className="h-10 w-10"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                    />
+                  </svg>
+                </div>
+              </div>
+              <p className="text-red-600 mb-6">{error}</p>
+              <button
+                onClick={resetScanner}
+                className="bg-[#7AE2CF] hover:bg-[#5ECFBC] text-[#001E26] font-medium py-3 px-6 rounded-lg w-full transition-colors"
+              >
+                Try Again
+              </button>
+            </div>
+          )}
+        </div>
+
+        {results && (
+          <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+            <h2 className="text-xl font-semibold mb-4 text-center text-[#006D77]">
+              Attendance Results
+            </h2>
+            <div className="space-y-4 mb-6 max-h-96 overflow-y-auto">
+              {results.results.map((result, index) => (
+                <div
+                  key={index}
+                  className={`border rounded-lg p-4 ${
+                    result.status === "loading"
+                      ? "bg-[#F5F0E1] border-[#7AE2CF]/30"
+                      : "bg-[#7AE2CF]/10 border-[#7AE2CF]"
+                  }`}
+                >
+                  <h3 className="font-semibold text-lg mb-2 text-[#006D77]">
+                    {result.name}
+                  </h3>
+                  <p className="text-sm">
+                    <span className="font-medium">Student ID:</span>{" "}
+                    {result.stu_id}
+                  </p>
+                  {result.status === "loading" ? (
+                    <div className="flex items-center space-x-2">
+                      <div className="animate-spin h-4 w-4 border-t-2 border-b-2 border-[#006D77] rounded-full"></div>
+                      <p className="text-sm text-gray-600">Processing...</p>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-[#006D77] font-medium">
+                      {result.status}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={resetScanner}
+              className="bg-[#7AE2CF] hover:bg-[#5ECFBC] text-[#001E26] font-medium py-3 px-6 rounded-lg w-full transition-colors"
+            >
+              Scan Another Code
+            </button>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
