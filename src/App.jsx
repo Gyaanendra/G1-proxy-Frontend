@@ -36,10 +36,13 @@ export default function AttendanceScanner() {
   const [isLoadingStudents, setIsLoadingStudents] = useState(true);
   const [isFetchingCookies, setIsFetchingCookies] = useState(false);
   const [cookieUpdateResults, setCookieUpdateResults] = useState(null);
+
   const videoRef = useRef(null);
   const qrScannerRef = useRef(null);
   const streamRef = useRef(null);
   const fileInputRef = useRef(null);
+  const scannerCallbackRef = useRef(false);
+  const isSubmittingRef = useRef(false);
 
   useEffect(() => {
     const fetchStudents = async () => {
@@ -136,10 +139,16 @@ export default function AttendanceScanner() {
   }, []);
 
   const submitAttendance = async (attendanceId) => {
-    if (!attendanceId) return;
+    if (!attendanceId || isSubmittingRef.current) {
+      console.log("Submission blocked - already in progress or no ID");
+      return;
+    }
 
+    isSubmittingRef.current = true;
     setIsSubmitting(true);
     setError(null);
+
+    console.log("Submitting attendance for ID:", attendanceId);
 
     try {
       const response = await axios.post(
@@ -174,6 +183,7 @@ export default function AttendanceScanner() {
       setError(`Error: ${err.message}`);
     } finally {
       setIsSubmitting(false);
+      isSubmittingRef.current = false;
     }
   };
 
@@ -210,6 +220,8 @@ export default function AttendanceScanner() {
         return;
       }
 
+      scannerCallbackRef.current = false; // Reset flag
+
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           deviceId: selectedCamera
@@ -234,6 +246,14 @@ export default function AttendanceScanner() {
       const scanner = new QrScanner(
         videoRef.current,
         (result) => {
+          if (scannerCallbackRef.current) {
+            console.log("Duplicate scan blocked");
+            return; // Prevent duplicate scans
+          }
+          scannerCallbackRef.current = true;
+
+          console.log("QR Code detected:", result.data);
+
           scanner.stop();
           stream.getTracks().forEach((track) => track.stop());
           setScanResult(result.data);
@@ -243,7 +263,7 @@ export default function AttendanceScanner() {
         {
           highlightScanRegion: true,
           highlightCodeOutline: true,
-          maxScansPerSecond: 10,
+          maxScansPerSecond: 5, // Reduced from 10
         }
       );
 
@@ -259,6 +279,11 @@ export default function AttendanceScanner() {
   const handleImageUpload = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
+
+    if (isSubmittingRef.current) {
+      console.log("Upload blocked - submission in progress");
+      return;
+    }
 
     try {
       const result = await QrScanner.scanImage(file, {
@@ -302,10 +327,14 @@ export default function AttendanceScanner() {
       setError("No camera selected. Please select a camera.");
       return;
     }
+    scannerCallbackRef.current = false; // Reset before starting
+    isSubmittingRef.current = false;
     setScannerActive(true);
   };
 
   const resetScanner = () => {
+    scannerCallbackRef.current = false;
+    isSubmittingRef.current = false;
     setScanResult(null);
     setResults(null);
     setError(null);
@@ -473,6 +502,53 @@ export default function AttendanceScanner() {
               </div>
             )}
 
+          {scannerActive && (
+            <div className="text-center">
+              <h2 className="text-xl font-semibold mb-4 text-indigo-700">
+                Scanning QR Code
+              </h2>
+              <div className="relative mb-4">
+                <video
+                  ref={videoRef}
+                  className="w-full rounded-lg shadow-lg"
+                  playsInline
+                />
+              </div>
+              {zoomSupported && (
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-indigo-700 mb-2">
+                    Zoom: {zoomLevel.toFixed(1)}x
+                  </label>
+                  <input
+                    type="range"
+                    min="1"
+                    max={maxZoom}
+                    step="0.1"
+                    value={zoomLevel}
+                    onChange={(e) => setZoomLevel(parseFloat(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+              )}
+              <button
+                onClick={() => {
+                  setScannerActive(false);
+                  if (qrScannerRef.current) {
+                    qrScannerRef.current.stop();
+                  }
+                  if (streamRef.current) {
+                    streamRef.current
+                      .getTracks()
+                      .forEach((track) => track.stop());
+                  }
+                }}
+                className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white font-medium py-3 px-6 rounded-lg w-full transition-all duration-300 shadow-lg hover:shadow-xl"
+              >
+                Cancel Scanning
+              </button>
+            </div>
+          )}
+
           {isSubmitting && (
             <div className="text-center">
               <div className="animate-spin h-12 w-12 border-t-4 border-b-4 border-indigo-600 rounded-full mx-auto mb-4"></div>
@@ -488,6 +564,12 @@ export default function AttendanceScanner() {
           {error && (
             <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
               <p className="text-red-600 font-medium">{error}</p>
+              <button
+                onClick={resetScanner}
+                className="mt-4 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white font-medium py-2 px-4 rounded-lg w-full transition-all duration-300"
+              >
+                Try Again
+              </button>
             </div>
           )}
         </div>
@@ -570,124 +652,65 @@ export default function AttendanceScanner() {
             </div>
             <button
               onClick={() => setCookieUpdateResults(null)}
-              className="bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white font-medium py-3 px-6 rounded-lg w-full transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-1"
+              className="bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white font-medium py-2 px-4 rounded-lg w-full transition-all duration-300"
             >
-              Close Results
-            </button>
-          </div>
-        )}
-
-        {scannerActive && (
-          <div className="bg-white bg-opacity-90 backdrop-filter backdrop-blur-lg rounded-xl shadow-lg p-6 mb-6 border border-indigo-200/50">
-            <h2 className="text-xl font-semibold mb-4 text-center text-indigo-700">
-              Scanning QR Code
-            </h2>
-            <div className="relative mb-4 rounded-lg overflow-hidden">
-              <video
-                ref={videoRef}
-                className="w-full h-64 object-cover rounded-lg"
-                playsInline
-                autoPlay
-              ></video>
-            </div>
-            {zoomSupported && (
-              <div className="mb-4 flex justify-center items-center">
-                <div className="flex items-center space-x-2 w-full">
-                  <span className="text-xs text-gray-500">1x</span>
-                  <input
-                    type="range"
-                    min="1"
-                    max={maxZoom}
-                    step="0.1"
-                    value={zoomLevel}
-                    onChange={(e) =>
-                      setZoomLevel(Number.parseFloat(e.target.value))
-                    }
-                    className="w-full accent-indigo-500"
-                  />
-                  <span className="text-xs text-gray-500">{maxZoom}x</span>
-                </div>
-              </div>
-            )}
-            <button
-              onClick={() => setScannerActive(false)}
-              className="bg-gradient-to-r from-pink-500 to-rose-600 hover:from-pink-600 hover:to-rose-700 text-white font-medium py-3 px-6 rounded-lg w-full transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-1"
-            >
-              Cancel
+              Close
             </button>
           </div>
         )}
 
         {results && (
-          <div className="bg-white rounded-xl shadow-lg p-6 mb-6 backdrop-filter backdrop-blur-lg bg-opacity-80 border border-indigo-200/50">
+          <div className="bg-white rounded-xl shadow-lg p-6 backdrop-filter backdrop-blur-lg bg-opacity-80 border border-indigo-200/50">
             <h2 className="text-xl font-semibold mb-4 text-center text-indigo-700">
               Attendance Results
             </h2>
-
-            {results.stats && (
-              <div className="mb-6 bg-gradient-to-r from-indigo-100 to-purple-100 rounded-lg p-4">
-                <div className="grid grid-cols-3 gap-4 text-center">
-                  <div>
-                    <p className="text-2xl font-bold text-indigo-700">
-                      {results.stats.total}
-                    </p>
-                    <p className="text-xs text-gray-600">Total</p>
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold text-emerald-600">
-                      {results.stats.successful}
-                    </p>
-                    <p className="text-xs text-gray-600">Successful</p>
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold text-red-600">
-                      {results.stats.failed}
-                    </p>
-                    <p className="text-xs text-gray-600">Failed</p>
-                  </div>
+            <div className="mb-4 text-center">
+              <p className="text-sm text-gray-600">
+                <span className="font-medium">Attendance ID:</span>{" "}
+                {results.attendance_id}
+              </p>
+              {results.stats && (
+                <div className="mt-2 flex justify-center space-x-4 text-sm">
+                  <span className="text-emerald-600 font-medium">
+                    ✓ Success: {results.stats.successful}
+                  </span>
+                  <span className="text-red-600 font-medium">
+                    ✗ Failed: {results.stats.failed}
+                  </span>
+                  <span className="text-gray-600 font-medium">
+                    Total: {results.stats.total}
+                  </span>
                 </div>
-              </div>
-            )}
-
+              )}
+            </div>
             <div className="space-y-4 mb-6 max-h-[480px] overflow-y-auto pr-2 scrollbar-thin">
-              {results.results.map((result, index) => {
-                let bgClass = "bg-gray-50 border-gray-200";
-
-                if (result.status === "ATTENDANCE_NOT_VALID") {
-                  bgClass = "bg-red-50 border-red-200";
-                } else if (result.status && !result.error) {
-                  bgClass = "bg-emerald-50 border-emerald-200";
-                } else if (result.error) {
-                  const isAlreadyRecorded = result.error.includes(
-                    "ATTENDANCE_RECORDED_ALREADY"
-                  );
-                  bgClass = isAlreadyRecorded
-                    ? "bg-blue-50 border-blue-200"
-                    : "bg-red-50 border-red-200";
-                }
-
-                return (
-                  <div
-                    key={index}
-                    className={`border rounded-lg p-4 ${bgClass} backdrop-blur-sm transition-all duration-300 hover:shadow-md`}
-                  >
-                    <h3 className="font-semibold text-lg mb-2 text-indigo-700">
-                      {result.name}
-                    </h3>
-                    <p className="text-sm mb-2">
-                      <span className="font-medium">Student ID:</span>{" "}
-                      {result.stu_id}
-                    </p>
-                    {renderStatusIndicator(result)}
-                  </div>
-                );
-              })}
+              {results.results.map((result, index) => (
+                <div
+                  key={index}
+                  className={`border rounded-lg p-4 ${
+                    result.status && !result.error
+                      ? "bg-emerald-50 border-emerald-200"
+                      : result.error?.includes("ATTENDANCE_RECORDED_ALREADY")
+                      ? "bg-blue-50 border-blue-200"
+                      : "bg-red-50 border-red-200"
+                  } backdrop-blur-sm transition-all duration-300 hover:shadow-md`}
+                >
+                  <h3 className="font-semibold text-lg mb-2 text-indigo-700">
+                    {result.name}
+                  </h3>
+                  <p className="text-sm">
+                    <span className="font-medium">Student ID:</span>{" "}
+                    {result.stu_id}
+                  </p>
+                  <div className="mt-2">{renderStatusIndicator(result)}</div>
+                </div>
+              ))}
             </div>
             <button
               onClick={resetScanner}
-              className="bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white font-medium py-3 px-6 rounded-lg w-full transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-1"
+              className="bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white font-medium py-3 px-6 rounded-lg w-full transition-all duration-300 shadow-lg hover:shadow-xl"
             >
-              Scan Another Code
+              Scan Another QR Code
             </button>
           </div>
         )}
